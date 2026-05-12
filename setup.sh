@@ -108,6 +108,37 @@ EOF
 fi
 
 # ---------------------------------------------------------------
+# Pin Python to 3.11 (the version the project is written for)
+#
+# Miniforge3 ships a fairly new default Python (currently 3.13).
+# Tkinter on Python 3.13 from conda-forge has been observed to
+# segfault inside the installer on some distros, and several
+# pip-pinned dependencies in installer.py (torch 2.6.0+cu124,
+# transformers, accelerate, ...) only publish wheels up to 3.12.
+# Forcing Python 3.11 in the base env gives us a known-good runtime.
+# ---------------------------------------------------------------
+
+CONDA_EXE="$PYTHON_DIR/bin/conda"
+if ! "$PYTHON_EXE" -c "import sys; sys.exit(0 if sys.version_info[:2]==(3,11) else 1)" 2>/dev/null; then
+    if [ ! -x "$CONDA_EXE" ]; then
+        echo "ERROR: $CONDA_EXE not found; cannot pin Python version."
+        exit 1
+    fi
+    echo "Pinning portable Python to 3.11 (this takes ~30-60s, downloads ~80 MB)..."
+    PIN_LOG="$(mktemp -t miniforge-pin.XXXXXX.log)"
+    if ! "$CONDA_EXE" install -n base -y -c conda-forge "python=3.11" > "$PIN_LOG" 2>&1; then
+        echo "ERROR: Failed to pin Python 3.11. Last output:"
+        echo "---"
+        tail -n 40 "$PIN_LOG"
+        echo "---"
+        rm -f "$PIN_LOG"
+        exit 1
+    fi
+    rm -f "$PIN_LOG"
+    echo "Pinned: $($PYTHON_EXE --version 2>&1)"
+fi
+
+# ---------------------------------------------------------------
 # Verify the portable Python can open a Tk window
 # ---------------------------------------------------------------
 
