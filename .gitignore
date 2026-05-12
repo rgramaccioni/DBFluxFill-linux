@@ -1,0 +1,27 @@
+# Created by setup.sh / installer.py - never commit
+python/
+python-embed.tar.gz
+models/
+config.json
+
+# Per-user generated content
+*.log
+*.seed
+*.rc
+*-tempImg.png
+*-tempMask.png
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
