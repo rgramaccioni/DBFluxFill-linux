@@ -109,16 +109,30 @@ def _validate_environment(config):
 def _build_subprocess_env():
     """
     Build an env dict for launching the portable Python.
-    python-build-standalone is self-contained and uses its own rpath, so no
-    LD_LIBRARY_PATH munging is needed. We still prepend its bin/ to PATH so
-    any helper scripts it spawns find the right interpreter.
+
+    Nuke injects its own PYTHONPATH / PYTHONHOME pointing at its bundled
+    site-packages (which contain a numpy compiled for Nuke's Python, not
+    for our portable Python 3.11). Inheriting those leads to mismatched
+    binary extensions being loaded ahead of our pinned versions and
+    crashes like:
+        ImportError: No module named 'numpy.core._multiarray_umath'
+    We therefore strip PYTHONPATH / PYTHONHOME and disable user-site so
+    the subprocess sees only our portable Python's site-packages.
+
+    python-build-standalone is self-contained and uses its own rpath, so
+    no LD_LIBRARY_PATH munging is needed. We still prepend its bin/ to
+    PATH so any helper scripts it spawns find the right interpreter.
     """
     python_exe = _get_python_exe()
     python_bin_dir = os.path.dirname(python_exe)
     env = os.environ.copy()
     env["PATH"] = python_bin_dir + os.pathsep + env.get("PATH", "")
-    env["HF_HUB_OFFLINE"]       = "1"
+    env["HF_HUB_OFFLINE"]        = "1"
     env["TRANSFORMERS_OFFLINE"]  = "1"
+    env["PYTHONNOUSERSITE"]      = "1"   # ignore ~/.local/lib/...
+    env.pop("PYTHONPATH", None)          # don't inherit Nuke's PYTHONPATH
+    env.pop("PYTHONHOME", None)          # don't inherit Nuke's PYTHONHOME
+    env.pop("PYTHONSTARTUP", None)       # don't run user/site startup file
     return env
 
 # ---------------------------------------------------------------------------
