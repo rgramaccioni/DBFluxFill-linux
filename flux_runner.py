@@ -288,16 +288,56 @@ def load_pipeline(args, model_variant):
             scheduler=scheduler,
         )
 
-        _log("INFO: Pipeline assembled. Moving to device: {}".format(device))
-        _log("INFO: It may take several minutes to move the model to the device.")
-        pipe = pipe.to(device)
-        _log("INFO: Pipeline moved to device.")
+        _log("INFO: Pipeline assembled.")
 
         if device == "cuda":
             vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-            if vram_gb < 16.0:
-                _log("INFO: VRAM under 16GB, enabling attention slicing.")
-                pipe.enable_attention_slicing()
+            _log("INFO: Detected GPU VRAM: {:.1f} GB".format(vram_gb))
+
+            # VRAM strategy depends on variant + available VRAM.
+            # FLUX Fill resident footprint with T5 in bf16 + transformer:
+            #   bf16:  ~24 GB transformer + ~10 GB T5  (peak >34 GB)
+            #   fp8:   ~12 GB transformer + ~10 GB T5  (peak >22 GB)
+            #   gguf:  ~ 8 GB transformer + ~10 GB T5  (peak >18 GB) but
+            #          GGUFQuantizationConfig dequantizes on the fly so
+            #          peak can spike when blocks are unpacked.
+            #
+            # For bf16/gguf we use enable_model_cpu_offload(): T5 returns
+            # to CPU after prompt encoding, transformer stays on GPU.
+            # Quality is preserved because there is no hardware-specific
+            # quantization (gguf dequantizes to bf16 ops, bf16 is native).
+            #
+            # For fp8 we DO NOT use cpu_offload: torchao fp8 weights need
+            # to stay on GPU for the fp8 matmul kernels. Round-tripping
+            # them through CPU silently falls back to a dequantized path
+            # and degrades output quality (observed: noisy inpainting).
+            # Instead we keep .to(cuda) and enable attention/VAE slicing.
+
+            if model_variant in ("bf16", "gguf") and vram_gb < 24.0:
+                _log("INFO: Enabling model CPU offload for variant '{}' "
+                     "(VRAM {:.1f} GB).".format(model_variant, vram_gb))
+                _log("INFO: This keeps T5 on CPU after prompt encoding to fit in VRAM.")
+                # enable_model_cpu_offload manages device placement itself;
+                # we must NOT call pipe.to(device) before/after.
+                pipe.enable_model_cpu_offload()
+            else:
+                _log("INFO: Moving pipeline to device: {}".format(device))
+                _log("INFO: It may take several minutes.")
+                pipe = pipe.to(device)
+                if model_variant == "fp8" and vram_gb < 24.0:
+                    _log("INFO: Enabling attention + VAE slicing for fp8 "
+                         "(VRAM {:.1f} GB).".format(vram_gb))
+                    pipe.enable_attention_slicing()
+                    try:
+                        pipe.enable_vae_slicing()
+                    except AttributeError:
+                        pass
+                elif vram_gb < 16.0:
+                    _log("INFO: VRAM under 16GB, enabling attention slicing.")
+                    pipe.enable_attention_slicing()
+        else:
+            _log("INFO: Moving pipeline to device: {}".format(device))
+            pipe = pipe.to(device)
 
         _log("INFO: Pipeline loaded successfully.")
         return pipe
