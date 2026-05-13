@@ -109,10 +109,9 @@ def _validate_environment(config):
 def _build_subprocess_env():
     """
     Build an env dict for launching the portable Python.
-    Miniforge3 is self-contained: its libraries live under ./python/lib and
-    are reached via the interpreter's rpath, so no LD_LIBRARY_PATH munging
-    is needed. We still prepend its bin/ to PATH so any helper scripts it
-    spawns find the right interpreter.
+    python-build-standalone is self-contained and uses its own rpath, so no
+    LD_LIBRARY_PATH munging is needed. We still prepend its bin/ to PATH so
+    any helper scripts it spawns find the right interpreter.
     """
     python_exe = _get_python_exe()
     python_bin_dir = os.path.dirname(python_exe)

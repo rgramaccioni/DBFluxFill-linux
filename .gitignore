@@ -1,6 +1,5 @@
 # Created by setup.sh / installer.py - never commit
 python/
-miniforge-installer.sh
 python-embed.tar.gz
 models/
 config.json

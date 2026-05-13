@@ -1383,6 +1383,461 @@ class InstallerApp(tk.Tk):
                 self._manual_config_json_row.pack_forget()
 
 # ---------------------------------------------------------------------------
+# Standalone step functions — used by the CLI installer.
+# These mirror the InstallerApp._step_* methods but operate on plain values
+# and a `log(msg, level="")` callable, so they don't depend on Tk.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_torch_build_free(compute_cap):
+    try:
+        if compute_cap:
+            major, minor = (int(x) for x in compute_cap.split("."))
+            sm = major * 10 + minor
+            if sm >= 120:
+                return "torch==2.7.0+cu128", "https://download.pytorch.org/whl/cu128"
+    except Exception:
+        pass
+    return "torch==2.6.0+cu124", "https://download.pytorch.org/whl/cu124"
+
+
+def _resolve_torchao_version_free(compute_cap):
+    try:
+        if compute_cap:
+            major, minor = (int(x) for x in compute_cap.split("."))
+            sm = major * 10 + minor
+            if sm >= 120:
+                return "torchao>=0.14.0"
+    except Exception:
+        pass
+    return "torchao==0.9.0"
+
+
+def _run_ensure_python311(log):
+    log("Checking for portable Python 3.11...")
+    python_exe = os.path.join(GIZMO_DIR, "python", "bin", "python3")
+    if not os.path.isfile(python_exe) or not os.access(python_exe, os.X_OK):
+        raise RuntimeError(
+            "Portable Python not found at:\n{}\n\n"
+            "Please re-run setup.sh to download and unpack it.".format(python_exe)
+        )
+    log("Portable Python found: {}".format(python_exe), "ok")
+    return python_exe
+
+
+def _run_bootstrap_pip(python_exe, log):
+    import subprocess, urllib.request, tempfile
+
+    pip_check = subprocess.run(
+        [python_exe, "-m", "pip", "--version"],
+        capture_output=True,
+    )
+    if pip_check.returncode == 0:
+        log("pip already available. Skipping get-pip.", "ok")
+        return
+
+    log("pip not found. Downloading get-pip.py...")
+    get_pip_url = "https://bootstrap.pypa.io/get-pip.py"
+    get_pip_path = os.path.join(tempfile.gettempdir(), "get-pip.py")
+
+    try:
+        urllib.request.urlretrieve(get_pip_url, get_pip_path)
+    except Exception as e:
+        raise RuntimeError(
+            "Failed to download get-pip.py: {}\n\n"
+            "To install manually:\n"
+            "  1. Download https://bootstrap.pypa.io/get-pip.py\n"
+            "  2. Place it anywhere on this machine\n"
+            "  3. Run: {}  path/to/get-pip.py\n"
+            "  4. Re-run setup.sh".format(e, python_exe)
+        )
+
+    log("Running get-pip.py...")
+    result = subprocess.run(
+        [python_exe, get_pip_path],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("get-pip.py failed:\n{}".format(result.stderr))
+    log("pip installed successfully.", "ok")
+
+
+def _run_install_deps(python_exe, variant, compute_cap, log):
+    import subprocess
+
+    pip_env = os.environ.copy()
+    pip_env["PYTHONNOUSERSITE"] = "1"
+
+    base_packages = [
+        ["diffusers==0.37.1"],
+        ["transformers==5.3.0"],
+        ["accelerate==1.13.0"],
+        ["safetensors==0.7.0"],
+        ["Pillow==12.1.1"],
+        ["numpy==2.4.3"],
+        ["sentencepiece"],
+        ["protobuf"],
+    ]
+    variant_packages = {
+        "fp8":  [[_resolve_torchao_version_free(compute_cap)]],
+        "gguf": [["gguf>=0.10.0"]],
+        "bf16": [],
+    }
+    packages = base_packages + variant_packages.get(variant, [])
+
+    log("Upgrading pip...")
+    proc = subprocess.Popen(
+        [python_exe, "-m", "pip", "install", "--upgrade",
+         "--no-user", "--no-warn-script-location", "pip"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env=pip_env,
+    )
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            log("    {}".format(line))
+    proc.wait()
+
+    torch_pkg, torch_index = _resolve_torch_build_free(compute_cap)
+    log("Installing Torch: {} from {} ...".format(torch_pkg, torch_index))
+    result = subprocess.run(
+        [python_exe, "-m", "pip", "install", torch_pkg,
+         "--index-url", torch_index, "--no-user", "--no-warn-script-location"],
+        capture_output=True, env=pip_env,
+    )
+    if result.returncode != 0:
+        log("stderr: {}".format(result.stderr.decode("utf-8", errors="replace")[:1000]), "err")
+        raise RuntimeError("Failed to install {}. See log above.".format(torch_pkg))
+    log("Torch installed.", "ok")
+
+    for pkg in packages:
+        log("Installing {} ...".format(pkg[0]))
+        cmd = [python_exe, "-m", "pip", "install",
+               "--no-user", "--no-warn-script-location"] + pkg
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=pip_env,
+        )
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                log("    {}".format(line))
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError("Failed to install {}. See log above.".format(pkg[0]))
+        log("Installed {}".format(pkg[0]), "ok")
+
+
+def _run_download_models(python_exe, hf_token, model_dir, variant, log):
+    import subprocess
+
+    if not hf_token:
+        raise RuntimeError("No Hugging Face token provided.")
+
+    download_script = os.path.join(GIZMO_DIR, "download_models.py")
+
+    log("Starting model download (variant: {}, dest: {}) ...".format(variant, model_dir))
+    proc = subprocess.Popen(
+        [python_exe, download_script,
+         "--token", hf_token, "--output", model_dir, "--variant", variant],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    for line in proc.stdout:
+        line = line.rstrip()
+        if line:
+            log("  {}".format(line))
+    proc.wait()
+    if proc.returncode != 0:
+        raise RuntimeError("Model download failed. See log above.")
+    log("Model download complete.", "ok")
+
+
+def _run_validate_manual_paths(manual_paths, log):
+    missing = []
+    for name, _, _ in MODEL_COMPONENTS:
+        path = manual_paths.get(name, "").strip()
+        if not os.path.isdir(path):
+            missing.append("  {}: {}".format(name, path))
+    if missing:
+        raise RuntimeError("The following component folders were not found:\n" + "\n".join(missing))
+    log("All component paths valid.", "ok")
+
+
+def _run_write_config(state, manual_mode, log):
+    import json
+
+    if manual_mode:
+        component_paths = {name: state["manual_paths"][name].strip()
+                           for name, _, _ in MODEL_COMPONENTS}
+    else:
+        base = state["model_dir"].strip()
+        component_paths = {subfolder: f"{base}/{subfolder}"
+                           for _, _, subfolder in MODEL_COMPONENTS}
+
+    config = {
+        "nuke_indie":    bool(state["indie_mode"]),
+        "temp_dir":      state["temp_dir"],
+        "output_dir":    state["output_dir"],
+        "output_name":   state["output_name"],
+        "model_variant": state["model_variant"],
+        "components":    component_paths,
+    }
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(config, f, indent=4)
+    log(f"config.json written to {CONFIG_PATH}", "ok")
+
+
+# ---------------------------------------------------------------------------
+# CLI installer (text-mode wizard)
+# Used when launched as `python installer.py --cli`. No Tk, no X11 required.
+# ---------------------------------------------------------------------------
+
+def _cli_print_header(title, step_num=None, total=6):
+    bar = "=" * 64
+    print()
+    print(bar)
+    if step_num is not None:
+        print(f"  DBFluxFill Setup  -  Step {step_num} of {total}  -  {title}")
+    else:
+        print(f"  DBFluxFill Setup  -  {title}")
+    print(bar)
+    print()
+
+
+def _cli_prompt(label, default=None, secret=False):
+    """Ask the user for input. Returns the entered value or `default` on empty input."""
+    if default is not None and not secret:
+        suffix = f" [{default}]"
+    elif secret:
+        suffix = ""
+    else:
+        suffix = ""
+    while True:
+        try:
+            if secret:
+                import getpass
+                val = getpass.getpass(f"{label}{suffix}: ")
+            else:
+                val = input(f"{label}{suffix}: ")
+        except EOFError:
+            print()
+            sys.exit(1)
+        val = val.strip()
+        if not val and default is not None:
+            return default
+        if val:
+            return val
+
+
+def _cli_prompt_yesno(label, default=False):
+    suffix = " [y/N]" if not default else " [Y/n]"
+    while True:
+        try:
+            val = input(f"{label}{suffix}: ").strip().lower()
+        except EOFError:
+            print()
+            sys.exit(1)
+        if not val:
+            return default
+        if val in ("y", "yes"):
+            return True
+        if val in ("n", "no"):
+            return False
+        print("  Please answer y or n.")
+
+
+def _cli_prompt_choice(label, choices, default=None):
+    """choices is a list of (key, description) tuples. Returns the chosen key."""
+    while True:
+        try:
+            val = input(f"{label}: ").strip()
+        except EOFError:
+            print()
+            sys.exit(1)
+        if not val and default is not None:
+            return default
+        for key, _ in choices:
+            if val.lower() == key.lower() or val == key:
+                return key
+        print("  Invalid choice. Pick one of: " + ", ".join(k for k, _ in choices))
+
+
+def _cli_log(msg, level=""):
+    if level == "err":
+        print("  [ERR ] " + msg)
+    elif level == "ok":
+        print("  [ OK ] " + msg)
+    else:
+        print("  " + msg)
+
+
+def run_cli():
+    """Text-mode installation wizard. Drives the same _run_* functions the GUI uses."""
+
+    # Screen 0 - Welcome
+    _cli_print_header("Welcome", step_num=1)
+    gpu_name, cuda_version, compute_cap = _detect_cuda()
+    print("System check:")
+    print(f"  GPU:           {gpu_name or 'Not detected'}")
+    print(f"  CUDA version:  {cuda_version or 'Not detected'}")
+    print(f"  Compute cap:   {compute_cap or 'Not detected'}")
+    print(f"  Disk space:    {(__import__('shutil').disk_usage(GIZMO_DIR).free // (1024**3))} GB free at {GIZMO_DIR}")
+    print()
+
+    cuda_ok = (gpu_name and "nvidia" in gpu_name.lower() and cuda_version)
+    if cuda_ok:
+        try:
+            cv = tuple(int(x) for x in cuda_version.split(".")[:2])
+            if cv < (12, 4):
+                print(f"WARNING: CUDA {cuda_version} is below the required 12.4.")
+                print("         Update your Nvidia drivers before continuing.")
+                if not _cli_prompt_yesno("Continue anyway?", default=False):
+                    sys.exit(1)
+        except Exception:
+            pass
+    else:
+        print("WARNING: No Nvidia GPU with CUDA was detected.")
+        print("         FLUX inference will not work without one.")
+        if not _cli_prompt_yesno("Continue anyway?", default=False):
+            sys.exit(1)
+
+    print()
+    input("Press Enter to continue, or Ctrl+C to abort. ")
+
+    # Screen 1 - File Paths
+    _cli_print_header("File Paths", step_num=2)
+    print("These paths support Nuke TCL expressions (e.g. [file dirname [value root.name]]).")
+    print("Press Enter to accept defaults.")
+    print()
+    temp_dir    = _cli_prompt("Temp directory",      default=DEFAULT_TEMP_DIR)
+    output_dir  = _cli_prompt("Output directory",    default=DEFAULT_OUTPUT_DIR)
+    output_name = _cli_prompt("Output filename",     default=DEFAULT_OUTPUT_NAME)
+    indie_mode  = _cli_prompt_yesno("Nuke Indie mode?", default=False)
+
+    # Screen 2 - Model Variant
+    _cli_print_header("Model Variant", step_num=3)
+    for key in ("bf16", "fp8", "gguf"):
+        info = MODEL_VARIANT_INFO[key]
+        print(f"  [{key}]  {info['size']}  -  {info['vram']}")
+        print(f"         {info['description']}")
+        print()
+    variant = _cli_prompt_choice(
+        "Choose variant [bf16/fp8/gguf]",
+        choices=[("bf16", "BF16"), ("fp8", "FP8"), ("gguf", "GGUF")],
+        default="bf16",
+    )
+
+    # Screen 3 - Model Setup
+    _cli_print_header("Model Setup", step_num=4)
+    print("Models can be downloaded automatically using a Hugging Face token,")
+    print("or you can point to existing local component folders manually.")
+    print()
+    manual_mode = _cli_prompt_yesno(
+        "Use manual mode (point to existing component folders)?", default=False
+    )
+
+    hf_token = ""
+    model_dir = ""
+    manual_paths = {}
+
+    if manual_mode:
+        print()
+        print("Enter the absolute path to each component folder.")
+        print("These should already contain the files downloaded from Hugging Face.")
+        print()
+        default_base = MODELS_DIR
+        for name, size, sub in MODEL_COMPONENTS:
+            default = os.path.join(default_base, sub)
+            manual_paths[name] = _cli_prompt(f"  {name} ({size})", default=default)
+    else:
+        print()
+        print("You will need a Hugging Face access token with read access to:")
+        print("  - black-forest-labs/FLUX.1-Fill-dev (license must be accepted)")
+        if variant == "fp8":
+            print("  - AlekseyCalvin/FluxFillDev_fp8_Diffusers")
+        elif variant == "gguf":
+            print("  - YarvixPA/FLUX.1-Fill-dev-GGUF")
+        print("Get one at: https://huggingface.co/settings/tokens")
+        print()
+        hf_token = _cli_prompt("Hugging Face token (input is hidden)", secret=True)
+        model_dir = _cli_prompt("Models directory", default=MODELS_DIR)
+
+    # Screen 4 - Install
+    _cli_print_header("Installing", step_num=5)
+    print("Running the install pipeline. This can take 10-40 minutes depending on")
+    print("internet speed and model variant size.")
+    print()
+
+    try:
+        python_exe = _run_ensure_python311(_cli_log)
+        _run_bootstrap_pip(python_exe, _cli_log)
+        _run_install_deps(python_exe, variant, compute_cap, _cli_log)
+        if manual_mode:
+            _run_validate_manual_paths(manual_paths, _cli_log)
+        else:
+            _run_download_models(python_exe, hf_token, model_dir, variant, _cli_log)
+        # clear token from memory once consumed
+        hf_token = ""
+        _run_write_config(
+            state={
+                "temp_dir":      temp_dir,
+                "output_dir":    output_dir,
+                "output_name":   output_name,
+                "indie_mode":    indie_mode,
+                "model_variant": variant,
+                "model_dir":     model_dir,
+                "manual_paths":  manual_paths,
+            },
+            manual_mode=manual_mode,
+            log=_cli_log,
+        )
+    except RuntimeError as e:
+        print()
+        print("=" * 64)
+        print("  INSTALL FAILED")
+        print("=" * 64)
+        print()
+        print(str(e))
+        print()
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print()
+        print("Aborted by user.")
+        sys.exit(130)
+
+    # Screen 5 - Done
+    _cli_print_header("Done", step_num=6)
+    print("Setup complete. Summary:")
+    print(f"  Portable Python:  {os.path.join(GIZMO_DIR, 'python')}")
+    if manual_mode:
+        print(f"  Model components: configured (manual mode)")
+    else:
+        print(f"  Model components: {model_dir}")
+    print(f"  config.json:      {CONFIG_PATH}")
+    print()
+    print("Add these two lines to your ~/.nuke/init.py file:")
+    print()
+    print("    " + INIT_PY_SNIPPET.replace("\n", "\n    "))
+    print()
+    nuke_dir = os.path.dirname(GIZMO_DIR)
+    init_path = os.path.join(nuke_dir, "init.py")
+    if not os.path.isfile(init_path):
+        if _cli_prompt_yesno(f"No init.py exists at {init_path} — create one with the snippet?", default=True):
+            try:
+                os.makedirs(nuke_dir, exist_ok=True)
+                with open(init_path, "w") as f:
+                    f.write(INIT_PY_SNIPPET + "\n")
+                print(f"  Created {init_path}")
+            except Exception as e:
+                print(f"  Could not create init.py: {e}")
+    else:
+        print(f"init.py already exists at {init_path}. Make sure it contains the snippet above.")
+    print()
+    print("Restart Nuke. DBFluxFill should appear in the node toolbar.")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -1391,6 +1846,11 @@ def _preflight_checks():
 
     # Linux version check
     if platform.system() != "Linux":
+        # In CLI mode we just print and exit, no Tk
+        if "--cli" in sys.argv:
+            print("ERROR: This build of DBFluxFill is only supported on Linux.")
+            print("       For Windows, use the original DBFluxFill repository.")
+            sys.exit(1)
         import tkinter as tk
         from tkinter import messagebox
         root = tk.Tk()
@@ -1403,7 +1863,11 @@ def _preflight_checks():
         root.destroy()
         sys.exit(1)
 
+
 if __name__ == "__main__":
     _preflight_checks()
+    if "--cli" in sys.argv:
+        run_cli()
+        sys.exit(0)
     app = InstallerApp()
     app.mainloop()

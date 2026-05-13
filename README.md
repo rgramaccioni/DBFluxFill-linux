@@ -24,11 +24,12 @@ This is the **Linux port** of the original [DBFluxFill](https://github.com/drber
 
 **Platform:** Linux (x86_64 or aarch64)
 - Tested on Ubuntu 22.04 / 24.04, Rocky Linux 9, and recent Debian-derivatives.
-- A desktop session is required for the installer GUI and the Generate progress window.
+- Installation runs in your terminal as a text-mode wizard — **no desktop session, no X11/Wayland required**. Works fine over plain SSH.
+- A desktop session **is** needed for using DBFluxFill inside Nuke (the gizmo opens a terminal window to show generation progress).
 
-**System packages required:** **none**. `setup.sh` downloads a self-contained Miniforge3 Python distribution into `./python/` which ships with `tkinter` and everything else the installer needs. No `sudo` and no distro package installation is necessary on the artist's machine.
+**System packages required:** **none**. `setup.sh` downloads a self-contained [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.11 distribution into `./python/`. No `sudo`, no Tcl/Tk system package, no distro-level dependencies on the artist's machine.
 
-**Terminal emulator (for live generation log):** any of `gnome-terminal`, `konsole`, `xfce4-terminal`, `alacritty`, `kitty`, `foot`, `terminator`, `xterm`. If none is available the runner still works — DBFluxFill just won't pop a window and you can `tail -F` the log file yourself.
+**Terminal emulator (for live generation log inside Nuke):** any of `gnome-terminal`, `konsole`, `xfce4-terminal`, `alacritty`, `kitty`, `foot`, `terminator`, `xterm`. If none is available the runner still works — DBFluxFill just won't pop a window and you can `tail -F` the log file yourself.
 
 **Nuke:** Nuke 13.2v8 or later (built for 13.2, but tested on later versions)
 
@@ -73,26 +74,26 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-This launches the DBFluxFill installer, a step-by-step GUI that handles everything else:
+This launches the DBFluxFill installer, a step-by-step text-mode wizard inside your terminal that handles everything else:
 
-- Downloading and unpacking a portable [Miniforge3](https://github.com/conda-forge/miniforge) Python distribution into `./python/` (no system Python or `sudo` required)
+- Downloading and unpacking a portable [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.11 distribution into `./python/` (no system Python or `sudo` required)
 - Installing all dependencies (including the correct PyTorch CUDA build)
 - Downloading your chosen model variant from Hugging Face
 - Writing the configuration file
 
-The installer has six screens:
+The installer asks you questions in sequence, one screen at a time:
 
-**Welcome** — Shows system requirements and checks your GPU and CUDA version. If your drivers are too old or no Nvidia GPU is detected, the installer will warn you before you proceed.
+**Welcome** — Shows system requirements and checks your GPU and CUDA version. If your drivers are too old or no Nvidia GPU is detected, the installer will warn you and ask whether to continue.
 
-**File Paths** — Sets default directories for temporary PNG/seed/log files and output renders as well as default file name practice. Pre-populated with sensible defaults based on your current Nuke project. Each field supports Nuke TCL expressions. You can also set Nuke Indie mode here.
+**File Paths** — Sets default directories for temporary PNG/seed/log files and output renders as well as the default filename pattern. Pre-populated with sensible defaults. Each field supports Nuke TCL expressions. You can also enable Nuke Indie mode here.
 
-**Model Variant** — Choose which version of FLUX.1 Fill Dev to download. See [Model Variants](#model-variants) below for a full comparison.
+**Model Variant** — Choose which version of FLUX.1 Fill Dev to download (`bf16`, `fp8`, or `gguf`). See [Model Variants](#model-variants) below for a full comparison.
 
-**Model Setup** — Enter your Hugging Face token and choose where to store the models. If you prefer to download components manually, there is a link to the manual setup path from this screen.
+**Model Setup** — Pick automatic download (enter your Hugging Face token + where to store the models) or manual mode (point to existing component folders if you've downloaded them on another machine and copied them over).
 
-**Installing** — The installer sets up the portable Python environment, installs dependencies, and downloads the model. This will take a while depending on your internet speed. A live log shows progress.
+**Installing** — The installer sets up the portable Python environment, installs dependencies via `pip`, and downloads the model. A live log streams pip and HuggingFace progress into your terminal. Takes 10-40 minutes depending on internet speed and variant.
 
-**Done** — Shows a summary of what was installed and displays the code snippet you need to add to your `init.py`. See Step 3 below.
+**Done** — Shows a summary of what was written and the code snippet you need to add to your `init.py`. Offers to create the `init.py` file for you if it doesn't exist yet.
 
 ### Step 3 — Update your init.py
 
@@ -103,7 +104,7 @@ import DBFluxFill
 nuke.pluginAddPath('./DBFluxFill')
 ```
 
-If you do not have an `init.py` yet, the Done screen offers to create one for you. The installer also has a button to open your `.nuke` folder via `xdg-open` so you can find the file easily.
+If you do not have an `init.py` yet, the Done screen offers to create one for you automatically.
 
 Once this is done, restart Nuke. DBFluxFill will appear in the toolbar.
 
@@ -229,7 +230,7 @@ When generation finishes, a Read node is dropped into your node graph with the r
 
 **Linux only.** This is the Linux build. For Windows, use the original [DBFluxFill](https://github.com/drberkowitz/DBFluxFill) repository. macOS is not supported.
 
-**Portable Python.** DBFluxFill ships with a self-contained [Miniforge3](https://github.com/conda-forge/miniforge) Python distribution (downloaded by `setup.sh` into `./python/`). It includes Tcl/Tk so the installer GUI works without any system Python or `sudo`-installed package. Runtime inference also runs entirely inside this portable environment.
+**Portable Python.** DBFluxFill ships with a self-contained [python-build-standalone](https://github.com/astral-sh/python-build-standalone) Python 3.11 distribution (downloaded by `setup.sh` into `./python/`). It does not depend on your system Python at any point. The installer wizard runs as text in your terminal — no Tkinter, no X11, no `sudo`, nothing to install at the system level.
 
 **Terminal emulator detection.** DBFluxFill probes for common terminal emulators in this order: `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `mate-terminal`, `lxterminal`, `alacritty`, `kitty`, `foot`, `tilix`, `terminator`, `urxvt`, `xterm`. The first one found is used to open the live log window. If none is installed, the runner still works — you can monitor progress with `tail -F` on the log file path printed in the Nuke script editor.
 
@@ -263,24 +264,24 @@ If you are distributing this folder to a VFX team for internal testing, here is 
 |---|---|
 | Nvidia driver with CUDA 12.4+ | `nvidia-smi` shows `CUDA Version: 12.4` or higher |
 | glibc 2.17 or newer (for portable Python) | `ldd --version` — any distro from CentOS 7 / Ubuntu 14.04 onwards is fine |
-| ~40 GB free on the `.nuke` partition | up to 35 GB models + ~400 MB portable Python + ~3 GB PyTorch wheels |
-| A desktop session | the installer is Tkinter; the generation log opens in a terminal emulator |
+| ~30 GB free on the `.nuke` partition | up to 25 GB models + ~150 MB portable Python + ~3 GB PyTorch wheels |
+| A desktop session (only for actually *using* DBFluxFill in Nuke) | the installer wizard itself is text-mode and works over plain SSH |
 
-**No `sudo` is required.** The portable Python (Miniforge3) is installed entirely under `~/.nuke/DBFluxFill/python/` and ships its own Tcl/Tk, so the artist does not need to ask IT for any distribution package.
+**No `sudo` is required.** The portable Python is installed entirely under `~/.nuke/DBFluxFill/python/` (it's just an extracted tarball — no root, no system-wide changes). The installer wizard runs in the terminal, so artists do not need a desktop session or any X11 forwarding to complete setup.
 
 ### Pre-downloading on studios with restricted internet
 
 `setup.sh` and the installer both download from the public internet by default:
 
-- Portable Python: a ~100 MB Miniforge3 installer from `github.com/conda-forge/miniforge`
+- Portable Python: a ~30 MB tarball from `github.com/astral-sh/python-build-standalone`
 - PyTorch CUDA wheels: ~2 GB from `download.pytorch.org`
 - FLUX components: 23–35 GB from `huggingface.co`
 
 If artist machines can't reach those hosts:
 
-1. **Portable Python**: download `Miniforge3-Linux-x86_64.sh` (or `Miniforge3-Linux-aarch64.sh`) from the pinned release at [github.com/conda-forge/miniforge/releases/tag/26.3.2-0](https://github.com/conda-forge/miniforge/releases/tag/26.3.2-0) on a machine that can, rename it to `miniforge-installer.sh`, and drop it next to `setup.sh` before running. The script picks it up automatically.
-2. **Models**: download all FLUX components on a machine with internet, then use **"I want to configure model components manually instead"** on the Model Setup screen of the installer to point at a local copy (a shared network path works for this — only `python/` needs to be local).
-3. **PyTorch wheels**: there is no built-in mirror toggle, so the artist's machine still needs `download.pytorch.org` reachable during install. If your studio has an internal PyPI mirror you can edit `_step_install_deps` in `installer.py` to use `--index-url <your-mirror>`.
+1. **Portable Python**: download `cpython-3.11.9+20240814-x86_64-unknown-linux-gnu-install_only.tar.gz` (or the `aarch64` variant) from [github.com/astral-sh/python-build-standalone/releases/tag/20240814](https://github.com/astral-sh/python-build-standalone/releases/tag/20240814) on a machine that can, rename it to `python-embed.tar.gz`, and drop it next to `setup.sh` before running. The script picks it up automatically.
+2. **Models**: download all FLUX components on a machine with internet, then answer "yes" to the **"Use manual mode"** question in the Model Setup step of the installer to point at a local copy (a shared network path works for this — only `python/` needs to be local).
+3. **PyTorch wheels**: there is no built-in mirror toggle, so the artist's machine still needs `download.pytorch.org` reachable during install. If your studio has an internal PyPI mirror you can edit `_run_install_deps` in `installer.py` to use `--index-url <your-mirror>`.
 
 ### Quick smoke test the tester should run after install
 
@@ -312,4 +313,4 @@ If artist machines can't reach those hosts:
 
 **diffusers** — [Hugging Face](https://huggingface.co/docs/diffusers) for the inference pipeline that powers the backend.
 
-**Miniforge / conda-forge** — [conda-forge](https://github.com/conda-forge/miniforge) for the self-contained Python distribution used as the inference runtime and for the installer GUI.
+**python-build-standalone** — [Astral / Gregory Szorc](https://github.com/astral-sh/python-build-standalone) for the self-contained Python distribution used as both the installer runtime and the inference runtime.
