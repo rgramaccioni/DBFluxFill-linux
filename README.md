@@ -23,7 +23,6 @@ This is the **Linux port** of the original [DBFluxFill](https://github.com/drber
 ## Requirements
 
 **Platform:** Linux (x86_64 or aarch64)
-- Tested on Ubuntu 22.04 / 24.04, Rocky Linux 9, and recent Debian-derivatives.
 - Installation runs in your terminal as a text-mode wizard — **no desktop session, no X11/Wayland required**. Works fine over plain SSH.
 - A desktop session **is** needed for using DBFluxFill inside Nuke (the gizmo opens a terminal window to show generation progress).
 
