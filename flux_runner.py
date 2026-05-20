@@ -158,7 +158,7 @@ def load_pipeline(args, model_variant):
         import torch
         from diffusers import FluxFillPipeline, FluxTransformer2DModel, AutoencoderKL
         from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-        from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5TokenizerFast
+        from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokenizer
     except ImportError as e:
         print("ERROR: Failed to import required libraries: {}".format(e), file=sys.stderr)
         print("ERROR: Make sure the portable Python environment was set up correctly by running setup.sh", file=sys.stderr)
@@ -265,8 +265,13 @@ def load_pipeline(args, model_variant):
             local_files_only=True,
         )
 
-        _log("INFO: Loading tokenizer_2 from: {}".format(args.tokenizer_2))
-        tokenizer_2 = T5TokenizerFast.from_pretrained(
+        _log("INFO: Loading tokenizer_2 (slow / SentencePiece) from: {}".format(args.tokenizer_2))
+        # Use T5Tokenizer (slow, pure SentencePiece) rather than T5TokenizerFast.
+        # For the T5-XXL used by FLUX the two implementations have been
+        # observed to produce subtly different tokenizations, which leads
+        # to noisier inpainting. Slow tokenizer adds microseconds per call
+        # (a single short prompt) so the perf cost is irrelevant.
+        tokenizer_2 = T5Tokenizer.from_pretrained(
             args.tokenizer_2,
             local_files_only=True,
         )
